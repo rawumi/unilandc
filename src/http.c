@@ -106,7 +106,7 @@ static Value http_call(const char *method, int argc, Value *argv) {
         if (jerr) return h_fail("HTTP %s failed: значение не сериализуется в JSON", upper);
         has_body = 1;
     }
-    HINTERNET session = WinHttpOpen(L"uniland-c/2.2.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+    HINTERNET session = WinHttpOpen(L"unilandc/2.2.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                                     WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!session) return h_fail("HTTP %s failed: WinHttpOpen (%lu)", upper, (unsigned long)GetLastError());
     HINTERNET conn = WinHttpConnect(session, whost_z, uc.nPort, 0);

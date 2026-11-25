@@ -1,4 +1,4 @@
-# uniland-c
+# unilandc
 
 Порт интерпретатора UniLand 2.2.0 с Go на C11 (MSVC). Отдельный проект рядом с эталоном `../uniland-go`.
 

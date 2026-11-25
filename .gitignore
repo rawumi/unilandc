@@ -14,3 +14,10 @@ tests/*.out
 tests/*.err
 tests/*.log
 tests/*.bin
+
+*.pfx
+*.p12
+*.cer
+*.crt
+*.key
+

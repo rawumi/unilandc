@@ -1,0 +1,5 @@
+try {
+    try { throw "x" } finally { print("fin") }
+} catch (e) {
+    print("out", e)
+}

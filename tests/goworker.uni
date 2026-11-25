@@ -1,0 +1,12 @@
+print(goeval("1 + 41"))
+print(goeval("strings.ToUpper(\"go\")"))
+print(goeval("fmt.Sprintf(\"<%d>\", 99)"))
+let acc = 0
+go {
+    totals := 0
+    for i := 1; i <= 5; i++ {
+        totals += i
+    }
+    fmt.Println("сумма:", totals)
+}
+print(goeval("totals + 1"))

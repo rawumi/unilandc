@@ -1,0 +1,8 @@
+print(goeval("1 + 41"))
+print(goeval("strings.ToUpper(\"go\")"))
+goexec("fmt.Println(\"из го\")")
+go {
+    for i := 0; i < 3; i++ {
+        fmt.Println(i)
+    }
+}

@@ -1,0 +1,24 @@
+x = 5
+y = x * 2
+print(x, y)
+
+fn double(n) { return n * 2 }
+
+if x > 1 {
+    print("больше", double(x))
+}
+
+for i in 0..3 {
+    print(i)
+}
+
+total = 0
+for i in 0..9 {
+    total += i
+}
+print(total)
+
+while total > 40 {
+    total -= 10
+}
+print(total)

@@ -1,0 +1,7 @@
+let counter = 0
+go {
+    uni.SetInt("counter", uni.GetInt("counter") + 41)
+    fmt.Println("в го:", uni.GetInt("counter"))
+}
+print(counter)
+print(goeval("uni.GetInt(\"counter\") + 1"))

@@ -1,0 +1,8 @@
+let m = c_load("msvcrt.dll")
+print(c_call(m, "strlen", "is", "hello"))
+print(c_call(m, "pow", "ddd", 2, 10))
+let k = c_load("kernel32.dll")
+print(c_call(k, "GetTickCount", "i") > 0)
+print(c_sym(k, "Sleep") > 0)
+c_free(k)
+c_free(m)

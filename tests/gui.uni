@@ -1,0 +1,7 @@
+let w = gui_window("Тест", 320, 200)
+let l = gui_label(w, "привет")
+gui_set(l, "пока")
+print(gui_get(l))
+let i = gui_input(w, "старт")
+print(gui_get(i))
+gui_close(w)

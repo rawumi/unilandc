@@ -1,0 +1,12 @@
+try {
+    throw "x"
+} catch (e) {
+    print("c", e)
+} finally {
+    print("f")
+}
+try {
+    nope()
+} finally {
+    print("f2")
+}

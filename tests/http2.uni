@@ -1,0 +1,7 @@
+let r = http_get("https://example.com")
+print(r.headers["Content-Type"])
+try {
+    http_get("http://127.0.0.1:1/x")
+} catch (e) {
+    print(e)
+}

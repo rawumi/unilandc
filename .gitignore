@@ -1,0 +1,16 @@
+*.obj
+*.exe
+*.pdb
+*.ilk
+*.exp
+*.lib
+build.log
+build/
+src_backup/
+.idea/
+__pycache__/
+*.pyc
+tests/*.out
+tests/*.err
+tests/*.log
+tests/*.bin

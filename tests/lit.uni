@@ -1,0 +1,5 @@
+try {
+    gui_gif("нет.gif")
+} catch (e) {
+    print(e)
+}

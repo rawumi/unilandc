@@ -12,13 +12,39 @@ struct BigInt {
     int sign;
     int n;
     uint32_t *d;
+    uint32_t inl[3];
 };
 
+typedef struct BiBlock {
+    struct BiBlock *next;
+    size_t used;
+    size_t cap;
+    unsigned char data[1];
+} BiBlock;
+
+static BiBlock *g_bi_block;
+
+static void *bi_arena(size_t size) {
+    size = (size + 7u) & ~(size_t)7u;
+    if (!g_bi_block || g_bi_block->used + size > g_bi_block->cap) {
+        size_t cap = size > (1u << 20) ? size : (1u << 20);
+        BiBlock *b = xmalloc(sizeof(BiBlock) + cap);
+        b->next = g_bi_block;
+        b->used = 0;
+        b->cap = cap;
+        g_bi_block = b;
+    }
+    void *p = g_bi_block->data + g_bi_block->used;
+    g_bi_block->used += size;
+    return p;
+}
+
 static BigInt *bi_new(int n) {
-    BigInt *b = xmalloc(sizeof(BigInt));
+    BigInt *b = bi_arena(sizeof(BigInt));
     b->sign = 0;
     b->n = n;
-    b->d = xmalloc(sizeof(uint32_t) * (size_t)(n > 0 ? n : 1));
+    if (n <= 3) b->d = b->inl;
+    else b->d = bi_arena(sizeof(uint32_t) * (size_t)n);
     for (int i = 0; i < n; i++) b->d[i] = 0;
     return b;
 }

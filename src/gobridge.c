@@ -208,7 +208,24 @@ static int worker_build(char *err, size_t cap) {
     }
     char cached[MAX_PATH * 2];
     snprintf(cached, sizeof(cached), "%s\\worker.exe", dir);
-    if (GetFileAttributesA(cached) != INVALID_FILE_ATTRIBUTES) {
+    unsigned long long h = 1469598103934665603ull;
+    for (const char *p = k_goworker_go; *p; p++) {
+        h ^= (unsigned char)*p;
+        h *= 1099511628211ull;
+    }
+    char want[32];
+    snprintf(want, sizeof(want), "%016llx", h);
+    char hashfile[MAX_PATH * 2];
+    snprintf(hashfile, sizeof(hashfile), "%s\\worker.hash", dir);
+    char have[64];
+    have[0] = 0;
+    FILE *hf = fopen(hashfile, "rb");
+    if (hf) {
+        size_t got = fread(have, 1, sizeof(have) - 1, hf);
+        have[got] = 0;
+        fclose(hf);
+    }
+    if (GetFileAttributesA(cached) != INVALID_FILE_ATTRIBUTES && !strncmp(have, want, 16)) {
         snprintf(g_worker, sizeof(g_worker), "%s", cached);
         return 1;
     }
@@ -286,6 +303,11 @@ static int worker_build(char *err, size_t cap) {
         return 0;
     }
     snprintf(g_worker, sizeof(g_worker), "%s", exe);
+    hf = fopen(hashfile, "wb");
+    if (hf) {
+        fputs(want, hf);
+        fclose(hf);
+    }
     return 1;
 }
 
@@ -345,7 +367,8 @@ static int gw_read_line(char *buf, size_t cap) {
     return 1;
 }
 
-int go_run(const char *op, const char *code, const char *scope, Value *out, char *err, size_t cap) {
+int go_run(const char *op, const char *code, const char *scope, const char *args_json, Value *out,
+           char *err, size_t cap) {
     if (g_dead) {
         snprintf(err, cap, "Go worker остановлен");
         return 0;
@@ -364,6 +387,10 @@ int go_run(const char *op, const char *code, const char *scope, Value *out, char
         js_str(&req, wrapped.buf);
     } else {
         js_str(&req, code);
+    }
+    if (args_json) {
+        sb_adds(&req, ",\"args\":");
+        sb_adds(&req, args_json);
     }
     sb_adds(&req, "}\n");
     if (!write_all(g_hin, req.buf)) {
@@ -427,17 +454,59 @@ int go_run(const char *op, const char *code, const char *scope, Value *out, char
 }
 
 int go_eval(const char *expr, Value *out, char *err, size_t cap) {
-    return go_run("eval", expr, NULL, out, err, cap);
+    return go_run("eval", expr, NULL, NULL, out, err, cap);
 }
 
 int go_exec(const char *code, char *err, size_t cap) {
     static int seq;
     char scope[64];
     snprintf(scope, sizeof(scope), "_uniExec%d", ++seq);
-    if (!go_run("exec", code, scope, NULL, err, cap)) return 0;
+    if (!go_run("exec", code, scope, NULL, NULL, err, cap)) return 0;
     char call[80];
     snprintf(call, sizeof(call), "%s()", scope);
-    return go_run("eval", call, NULL, NULL, err, cap);
+    return go_run("eval", call, NULL, NULL, NULL, err, cap);
+}
+
+int go_resolve_func(const char *name, char *err, size_t cap) {
+    return go_run("func", name, NULL, NULL, NULL, err, cap);
+}
+
+int go_call_func(const char *name, int argc, Value *argv, Value *out, char *err, size_t cap) {
+    SB a;
+    sb_init(&a);
+    sb_adds(&a, "[");
+    for (int i = 0; i < argc; i++) {
+        if (i) sb_adds(&a, ",");
+        Value s = value_py_str(argv[i]);
+        js_str(&a, s.as.s->s);
+    }
+    sb_adds(&a, "]");
+    return go_run("fcall", name, NULL, a.buf, out, err, cap);
+}
+
+static Value b_go_func_native(Func *self, int argc, Value *argv) {
+    char err[2048];
+    Value out = v_null();
+    if (!go_call_func((const char *)self->data, argc, argv, &out, err, sizeof(err))) {
+        err_msgf("%s", err);
+        return v_null();
+    }
+    return out;
+}
+
+Value go_func_value(const char *sym) {
+    char err[2048];
+    if (!go_resolve_func(sym, err, sizeof(err))) {
+        err_msgf("%s", err);
+        return v_null();
+    }
+    Func *f = xmalloc(sizeof(Func));
+    memset(f, 0, sizeof(*f));
+    f->name = xstrdup(sym);
+    f->native = NULL;
+    f->native_ctx = b_go_func_native;
+    f->data = xstrdup(sym);
+    return v_func(f);
 }
 
 void go_bridge_close(void) {

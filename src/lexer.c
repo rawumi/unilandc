@@ -17,7 +17,7 @@ typedef struct {
 static const char *keywords[] = {
     "let", "const", "func", "fn", "return", "if", "else", "for", "while",
     "break", "continue", "try", "catch", "finally", "throw", "true", "false",
-    "null", "in", "python", NULL
+    "null", "in", "python", "import", "as", NULL
 };
 
 static const char *multi_ops[] = {
@@ -202,6 +202,12 @@ static void read_word(Lx *l, int line, int col) {
     else tok_add(l, T_IDENT, word, line, col);
 }
 
+static int esc_known(uint32_t esc, int tpl) {
+    if (esc == 'n' || esc == 't' || esc == 'r') return 1;
+    if (!tpl) return esc == '"' || esc == '\\' || esc == '0';
+    return esc == '`' || esc == '\\' || esc == '{' || esc == '}';
+}
+
 static uint32_t unescape(uint32_t esc, int tpl) {
     if (esc == 'n') return '\n';
     if (esc == 't') return '\t';
@@ -229,6 +235,13 @@ static int read_quoted(Lx *l, int line, int col, uint32_t quote, int tpl) {
             advance(l, 1);
             if (l->i >= l->n) break;
             uint32_t esc = l->rs[l->i];
+            if (!esc_known(esc, tpl)) {
+                sb_adds(&b, "\\");
+                char *e = u8_encode(esc);
+                sb_adds(&b, e);
+                advance(l, 1);
+                continue;
+            }
             uint32_t dec = unescape(esc, tpl);
             if (dec == 0) {
                 sb_addch(&b, 0);

@@ -1,0 +1,46 @@
+fn make_counter(start) {
+    let n = start
+    return fn(step) {
+        n = n + step
+        return n
+    }
+}
+
+c = make_counter(10)
+print(c(5))
+print(c(5))
+
+fn fact(n) {
+    if n <= 1 { return 1 }
+    return n * fact(n - 1)
+}
+print(fact(6))
+
+total = 0
+for x in [1, 2, 3, 4] {
+    if x == 3 { continue }
+    total += x
+}
+print(total)
+
+obj = {"a": 1, "b": 2}
+obj.a += 10
+obj["b"] = obj.b * 2
+print(obj.a, obj.b)
+
+try {
+    throw "boom"
+} catch (e) {
+    print("caught:", e)
+} finally {
+    print("finally")
+}
+
+i = 0
+while true {
+    i += 1
+    if i >= 3 { break }
+}
+print(i)
+
+print(`шаблон ${1 + 2} и ${uppercase("ok")}`)

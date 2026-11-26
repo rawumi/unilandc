@@ -14,12 +14,54 @@ struct Env {
     Env *parent;
     Binding *b;
     int n, cap;
+    int *idx;
+    int idxcap;
 };
 
 static Env *g_global;
 static Env *g_env;
 static Value g_ret;
 Interp g_it;
+
+typedef struct {
+    const char *fn_name;
+    int line;
+} Frame;
+
+static Frame g_frames[256];
+static int g_nframes;
+static Frame g_snap[256];
+static int g_nsnap;
+static int g_trace_mode;
+
+void interp_set_trace(int on) { g_trace_mode = on; }
+
+int interp_trace_on(void) { return g_trace_mode; }
+
+void interp_frame_push(const char *name, int line) {
+    if (g_nframes < 256) {
+        g_frames[g_nframes].fn_name = name;
+        g_frames[g_nframes].line = line;
+        g_nframes++;
+    }
+}
+
+void interp_frame_pop(void) {
+    if (g_nframes > 0) g_nframes--;
+}
+
+void interp_snapshot_error(void) {
+    if (!g_err.set || g_nsnap > 0) return;
+    g_nsnap = g_nframes;
+    for (int i = 0; i < g_nframes; i++) g_snap[i] = g_frames[i];
+}
+
+void interp_print_stack(FILE *f) {
+    if (g_nsnap <= 0) return;
+    fprintf(f, "Стек вызовов:\n");
+    for (int i = g_nsnap - 1; i >= 0; i--)
+        fprintf(f, "  в %s(), строка %d\n", g_snap[i].fn_name, g_snap[i].line);
+}
 
 static Env *env_new(Env *parent);
 static void env_define(Env *e, const char *name, Value v, int is_const);
@@ -29,20 +71,71 @@ Env *env_global(void) { return g_global; }
 void env_define_public(Env *e, const char *name, Value v, int is_const) { env_define(e, name, v, is_const); }
 
 static Env *env_new(Env *parent) {
-    Env *e = xmalloc(sizeof(Env));
+    typedef struct EnvBlock {
+        struct EnvBlock *next;
+        size_t used;
+        size_t cap;
+        unsigned char data[1];
+    } EnvBlock;
+    static EnvBlock *block;
+    size_t size = (sizeof(Env) + 7u) & ~(size_t)7u;
+    if (!block || block->used + size > block->cap) {
+        size_t cap = 1u << 16;
+        EnvBlock *b = xmalloc(sizeof(EnvBlock) + cap);
+        b->next = block;
+        b->used = 0;
+        b->cap = cap;
+        block = b;
+    }
+    Env *e = (Env *)(block->data + block->used);
+    block->used += size;
     e->parent = parent;
     e->b = NULL;
     e->n = e->cap = 0;
+    e->idx = NULL;
+    e->idxcap = 0;
     return e;
 }
 
+static unsigned name_hash(const char *s) {
+    unsigned h = 2166136261u;
+    while (*s) {
+        h ^= (unsigned char)*s++;
+        h *= 16777619u;
+    }
+    return h;
+}
+
+static void env_index_put(Env *e, int bi, unsigned h) {
+    int mask = e->idxcap - 1;
+    int i = (int)(h & (unsigned)mask);
+    while (e->idx[i] >= 0) i = (i + 1) & mask;
+    e->idx[i] = bi;
+}
+
+static void env_rehash(Env *e, int want) {
+    int cap = 8;
+    while (cap < want * 2) cap <<= 1;
+    free(e->idx);
+    e->idx = xmalloc(sizeof(int) * (size_t)cap);
+    for (int i = 0; i < cap; i++) e->idx[i] = -1;
+    e->idxcap = cap;
+    for (int i = 0; i < e->n; i++) env_index_put(e, i, name_hash(e->b[i].name));
+}
+
 static void env_define(Env *e, const char *name, Value v, int is_const) {
-    for (int i = 0; i < e->n; i++) {
-        if (strcmp(e->b[i].name, name) == 0) {
-            e->b[i].v = v;
-            e->b[i].is_const = is_const;
+    unsigned h = name_hash(name);
+    if (e->idxcap == 0 || (e->n + 2) * 4 > e->idxcap * 3) env_rehash(e, e->n + 1);
+    int mask = e->idxcap - 1;
+    int i = (int)(h & (unsigned)mask);
+    while (e->idx[i] >= 0) {
+        Binding *bb = &e->b[e->idx[i]];
+        if (bb->name == name || strcmp(bb->name, name) == 0) {
+            bb->v = v;
+            bb->is_const = is_const;
             return;
         }
+        i = (i + 1) & mask;
     }
     if (e->n == e->cap) {
         e->cap = e->cap ? e->cap * 2 : 8;
@@ -51,13 +144,21 @@ static void env_define(Env *e, const char *name, Value v, int is_const) {
     e->b[e->n].name = xstrdup(name);
     e->b[e->n].v = v;
     e->b[e->n].is_const = is_const;
+    e->idx[i] = e->n;
     e->n++;
 }
 
 static Binding *env_find(Env *e, const char *name) {
+    unsigned h = name_hash(name);
     for (Env *p = e; p; p = p->parent) {
-        for (int i = 0; i < p->n; i++)
-            if (strcmp(p->b[i].name, name) == 0) return &p->b[i];
+        if (p->idxcap == 0) continue;
+        int mask = p->idxcap - 1;
+        int i = (int)(h & (unsigned)mask);
+        while (p->idx[i] >= 0) {
+            Binding *bb = &p->b[p->idx[i]];
+            if (bb->name == name || strcmp(bb->name, name) == 0) return bb;
+            i = (i + 1) & mask;
+        }
     }
     return NULL;
 }
@@ -104,7 +205,24 @@ static void env_set(Env *e, const char *name, Value v) {
     b->v = v;
 }
 
+static int block_needs_env(Block *b) {
+    for (int i = 0; i < b->n; i++) {
+        Node *s = b->stmts[i];
+        if (!s) continue;
+        if (s->t == N_VARDECL || s->t == N_FUNCDECL || s->t == N_IMPORT) return 1;
+    }
+    return 0;
+}
+
 static Flow exec_block(Block *b) {
+    if (!block_needs_env(b)) {
+        Flow fl = F_OK;
+        for (int i = 0; i < b->n; i++) {
+            fl = exec(b->stmts[i]);
+            if (fl != F_OK) break;
+        }
+        return fl;
+    }
     Env *old = g_env;
     g_env = env_new(old);
     Flow fl = F_OK;
@@ -114,6 +232,151 @@ static Flow exec_block(Block *b) {
     }
     g_env = old;
     return fl;
+}
+
+static char g_base_dir[1024] = ".";
+
+void interp_set_base_dir(const char *dir) {
+    snprintf(g_base_dir, sizeof(g_base_dir), "%s", (dir && *dir) ? dir : ".");
+}
+
+typedef struct {
+    char *path;
+    Value exports;
+    int done;
+} ModEntry;
+
+static ModEntry g_mods[64];
+static int g_nmods;
+
+static int path_is_abs(const char *p) {
+    if (p[0] == '/' || p[0] == '\\') return 1;
+    return p[0] != 0 && p[1] == ':';
+}
+
+static void dir_name(const char *path, char *out, size_t cap) {
+    size_t len = strlen(path);
+    size_t cut = 0;
+    int found = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (path[i] == '/' || path[i] == '\\') {
+            cut = i;
+            found = 1;
+        }
+    }
+    if (!found || cut == 0) {
+        snprintf(out, cap, ".");
+        return;
+    }
+    size_t n = cut < cap - 1 ? cut : cap - 1;
+    memcpy(out, path, n);
+    out[n] = 0;
+}
+
+static char *slurp_file(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return NULL;
+    }
+    long size = ftell(f);
+    if (size < 0) {
+        fclose(f);
+        return NULL;
+    }
+    rewind(f);
+    char *buf = xmalloc((size_t)size + 1);
+    size_t got = fread(buf, 1, (size_t)size, f);
+    fclose(f);
+    buf[got] = 0;
+    if (got >= 3 && (unsigned char)buf[0] == 0xEF && (unsigned char)buf[1] == 0xBB &&
+        (unsigned char)buf[2] == 0xBF)
+        memmove(buf, buf + 3, got - 3 + 1);
+    return buf;
+}
+
+static void bind_exports(Value ex, const char *alias) {
+    if (alias) {
+        env_define(g_env, alias, ex, 0);
+        return;
+    }
+    Map *m = ex.as.m;
+    for (int i = 0; i < m->n; i++) env_define(g_env, m->pairs[i].k, m->pairs[i].v, 0);
+}
+
+static void import_module(Node *n) {
+    const char *path = n->u.imports.path;
+    const char *alias = n->u.imports.alias;
+    char resolved[2048];
+    if (path_is_abs(path)) {
+        snprintf(resolved, sizeof(resolved), "%s", path);
+    } else {
+        char sep = strchr(g_base_dir, '\\') ? '\\' : '/';
+        size_t blen = strlen(g_base_dir);
+        while (blen > 1 && (g_base_dir[blen - 1] == '\\' || g_base_dir[blen - 1] == '/')) blen--;
+        snprintf(resolved, sizeof(resolved), "%.*s%c%s", (int)blen, g_base_dir, sep, path);
+    }
+
+    for (int i = 0; i < g_nmods; i++) {
+        if (strcmp(g_mods[i].path, resolved) == 0) {
+            if (!g_mods[i].done) {
+                err_linef(n->line, "циклический импорт: %s", path);
+                return;
+            }
+            bind_exports(g_mods[i].exports, alias);
+            return;
+        }
+    }
+
+    char *src = slurp_file(resolved);
+    if (!src) {
+        err_linef(n->line, "import: файл не найден: %s", resolved);
+        return;
+    }
+    int nt = 0;
+    Token *toks = lex(src, &nt);
+    Node *prog = parse_program(toks);
+    if (!prog) return;
+
+    Env *saved_env = g_env;
+    char saved_base[1024];
+    snprintf(saved_base, sizeof(saved_base), "%s", g_base_dir);
+
+    int slot = -1;
+    if (g_nmods < 64) {
+        slot = g_nmods++;
+        g_mods[slot].path = xstrdup(resolved);
+        g_mods[slot].exports = v_map();
+        g_mods[slot].done = 0;
+    }
+
+    Env *menv = env_new(g_global);
+    g_env = menv;
+    dir_name(resolved, g_base_dir, sizeof(g_base_dir));
+
+    Flow fl = F_OK;
+    for (int i = 0; i < prog->u.program.n; i++) {
+        fl = exec(prog->u.program.stmts[i]);
+        if (fl != F_OK) break;
+    }
+
+    g_env = saved_env;
+    snprintf(g_base_dir, sizeof(g_base_dir), "%s", saved_base);
+
+    if (fl == F_RETURN) {
+        err_linef(n->line, "import: return на верхнем уровне модуля: %s", path);
+        return;
+    }
+    if (g_err.set) return;
+
+    Value ex = v_map();
+    for (int i = 0; i < menv->n; i++) map_set(ex.as.m, menv->b[i].name, menv->b[i].v);
+    if (slot >= 0) {
+        g_mods[slot].exports = ex;
+        g_mods[slot].done = 1;
+    }
+    bind_exports(ex, alias);
 }
 
 static Value apply_binary(const char *op, Value left, Value right, int line);
@@ -226,12 +489,16 @@ Value eval(Node *n) {
     case N_CALL: {
         Value fn = eval(n->u.call.callee);
         if (g_err.set) return v_null();
-        Value *args = xmalloc(sizeof(Value) * (size_t)(n->u.call.nargs ? n->u.call.nargs : 1));
-        for (int i = 0; i < n->u.call.nargs; i++) {
+        Value small_args[8];
+        int nargs = n->u.call.nargs;
+        Value *args = nargs <= 8 ? small_args : xmalloc(sizeof(Value) * (size_t)nargs);
+        for (int i = 0; i < nargs; i++) {
             args[i] = eval(n->u.call.args[i]);
             if (g_err.set) return v_null();
         }
-        return call_value(fn, n->u.call.nargs, args, n->line);
+        Value r = call_value(fn, nargs, args, n->line);
+        if (args != small_args) free(args);
+        return r;
     }
     case N_FUNCEXPR: {
         Func *f = xmalloc(sizeof(Func));
@@ -241,6 +508,8 @@ Value eval(Node *n) {
         f->body = n->u.funcexpr.body;
         f->closure = g_env;
         f->native = NULL;
+        f->native_ctx = NULL;
+        f->data = NULL;
         return v_func(f);
     }
     case N_ARRAY: {
@@ -273,6 +542,37 @@ static int int_index(Value v, int64_t *out) {
     return 1;
 }
 
+static void assign_index(Value obj, Value idx, Value value, int line) {
+    if (obj.t == V_LIST) {
+        int64_t i;
+        if (!int_index(idx, &i)) {
+            err_line(line, "List index must be an integer");
+            return;
+        }
+        if (i < 0 || i >= obj.as.l->n) {
+            Value is = idx.t == V_INT ? v_str(bi_to_str(idx.as.i)) : value_py_str(idx);
+            err_linef(line, "List index %s out of range", is.as.s->s);
+            return;
+        }
+        obj.as.l->items[i] = value;
+        return;
+    }
+    if (obj.t == V_MAP) {
+        Value k = value_py_str(idx);
+        map_set(obj.as.m, k.as.s->s, value);
+        return;
+    }
+    err_linef(line, "Cannot assign by index into %s", type_of(obj));
+}
+
+static void assign_member(Value obj, const char *name, Value value, int line) {
+    if (obj.t == V_MAP) {
+        map_set(obj.as.m, name, value);
+        return;
+    }
+    err_linef(line, "Cannot assign field on %s", type_of(obj));
+}
+
 static void assign_to(Node *target, Value value, int line) {
     if (target->t == N_IDENT) {
         if (!env_find(g_env, target->u.ident.name)) {
@@ -287,36 +587,13 @@ static void assign_to(Node *target, Value value, int line) {
         if (g_err.set) return;
         Value idx = eval(target->u.index.index);
         if (g_err.set) return;
-        if (obj.t == V_LIST) {
-            int64_t i;
-            if (!int_index(idx, &i)) {
-                err_line(line, "List index must be an integer");
-                return;
-            }
-            if (i < 0 || i >= obj.as.l->n) {
-                Value is = idx.t == V_INT ? v_str(bi_to_str(idx.as.i)) : value_py_str(idx);
-                err_linef(line, "List index %s out of range", is.as.s->s);
-                return;
-            }
-            obj.as.l->items[i] = value;
-            return;
-        }
-        if (obj.t == V_MAP) {
-            Value k = value_py_str(idx);
-            map_set(obj.as.m, k.as.s->s, value);
-            return;
-        }
-        err_linef(line, "Cannot assign by index into %s", type_of(obj));
+        assign_index(obj, idx, value, line);
         return;
     }
     if (target->t == N_MEMBER) {
         Value obj = eval(target->u.member.obj);
         if (g_err.set) return;
-        if (obj.t == V_MAP) {
-            map_set(obj.as.m, target->u.member.name, value);
-            return;
-        }
-        err_linef(line, "Cannot assign field on %s", type_of(obj));
+        assign_member(obj, target->u.member.name, value, line);
         return;
     }
     err_line(line, "Invalid assignment target");
@@ -426,6 +703,7 @@ static Flow exec_try(Node *n) {
 
 Flow exec(Node *n) {
     if (!n) return F_OK;
+    if (g_trace_mode) fprintf(stderr, "[trace] строка %d\n", n->line);
     switch (n->t) {
     case N_BLOCK:
         return exec_block(&n->u.block);
@@ -443,6 +721,8 @@ Flow exec(Node *n) {
         f->body = n->u.funcdecl.body;
         f->closure = g_env;
         f->native = NULL;
+        f->native_ctx = NULL;
+        f->data = NULL;
         env_define(g_env, n->u.funcdecl.name, v_func(f), 0);
         return F_OK;
     }
@@ -553,6 +833,10 @@ Flow exec(Node *n) {
         err_line(n->line, s.as.s->s);
         return F_ERROR;
     }
+    case N_IMPORT: {
+        import_module(n);
+        return g_err.set ? F_ERROR : F_OK;
+    }
     default:
         err_msg("Cannot execute node");
         return F_ERROR;
@@ -567,6 +851,7 @@ Value call_value(Value fn, int argc, Value *argv, int line) {
         return v_null();
     }
     Func *f = fn.as.fn;
+    if (f->native_ctx) return f->native_ctx(f, argc, argv);
     if (f->native) return f->native(argc, argv);
     if (argc != f->nparams) {
         if (line >= 0)
@@ -579,27 +864,41 @@ Value call_value(Value fn, int argc, Value *argv, int line) {
     for (int i = 0; i < f->nparams; i++) env_define(call_env, f->params[i], argv[i], 0);
     Env *old = g_env;
     g_env = call_env;
+    const char *fname = f->name ? f->name : "<аноним>";
+    int pushed = 0;
+    if (g_nframes < 256) {
+        g_frames[g_nframes].fn_name = fname;
+        g_frames[g_nframes].line = line;
+        g_nframes++;
+        pushed = 1;
+    }
+    if (g_trace_mode) fprintf(stderr, "[trace] -> %s() строка %d\n", fname, line);
     Flow fl = exec_block(f->body);
     g_env = old;
-    if (fl == F_RETURN) return g_ret;
-    if (fl == F_ERROR) return v_null();
-    if (fl == F_EXIT) {
+    Value result = v_null();
+    if (fl == F_RETURN) {
+        result = g_ret;
+    } else if (fl == F_EXIT) {
         err_exit(0);
-        return v_null();
-    }
-    if (fl == F_BREAK) {
+    } else if (fl == F_BREAK) {
         err_msg("break вне цикла");
-        return v_null();
-    }
-    if (fl == F_CONTINUE) {
+    } else if (fl == F_CONTINUE) {
         err_msg("continue вне цикла");
-        return v_null();
     }
-    return v_null();
+    if (g_err.set && g_nsnap == 0) {
+        g_nsnap = g_nframes;
+        for (int i = 0; i < g_nframes; i++) g_snap[i] = g_frames[i];
+    }
+    if (pushed) g_nframes--;
+    if (g_trace_mode) fprintf(stderr, "[trace] <- %s()\n", fname);
+    return result;
 }
 
+#define OP_IS1(c) (op[0] == (c) && op[1] == 0)
+#define OP_IS2(a, b) (op[0] == (a) && op[1] == (b))
+
 static Value apply_binary(const char *op, Value left, Value right, int line) {
-    if (strcmp(op, "..") == 0) {
+    if (OP_IS2('.', '.')) {
         if (left.t != V_INT || right.t != V_INT) {
             err_line(line, "Range bounds must be integers");
             return v_null();
@@ -613,7 +912,7 @@ static Value apply_binary(const char *op, Value left, Value right, int line) {
         for (int64_t i = a; i <= b && out.as.l->n < 1000000; i++) list_push(out.as.l, v_int_i64(i));
         return out;
     }
-    if (strcmp(op, "+") == 0) {
+    if (OP_IS1('+')) {
         if (left.t == V_STR || right.t == V_STR) {
             Value a = value_str(left);
             Value b = value_str(right);
@@ -631,9 +930,9 @@ static Value apply_binary(const char *op, Value left, Value right, int line) {
         }
         return op_add(left, right);
     }
-    if (strcmp(op, "-") == 0) return op_sub(left, right);
-    if (strcmp(op, "*") == 0) return op_mul(left, right);
-    if (strcmp(op, "/") == 0) {
+    if (OP_IS1('-')) return op_sub(left, right);
+    if (OP_IS1('*')) return op_mul(left, right);
+    if (OP_IS1('/')) {
         int zero = 0;
         if (right.t == V_INT) zero = bi_is_zero(right.as.i);
         else if (right.t == V_FLOAT) zero = right.as.f == 0;
@@ -644,26 +943,26 @@ static Value apply_binary(const char *op, Value left, Value right, int line) {
         }
         return op_div(left, right);
     }
-    if (strcmp(op, "%") == 0) return op_mod(left, right);
-    if (strcmp(op, "^") == 0) return op_pow(left, right);
-    if (strcmp(op, "==") == 0) return v_bool(value_equal(left, right));
-    if (strcmp(op, "!=") == 0) return v_bool(!value_equal(left, right));
-    if (strcmp(op, "<") == 0) {
+    if (OP_IS1('%')) return op_mod(left, right);
+    if (OP_IS1('^')) return op_pow(left, right);
+    if (OP_IS2('=', '=')) return v_bool(value_equal(left, right));
+    if (OP_IS2('!', '=')) return v_bool(!value_equal(left, right));
+    if (OP_IS1('<')) {
         int r = value_less(left, right);
         if (g_err.set) return v_null();
         return v_bool(r);
     }
-    if (strcmp(op, ">") == 0) {
+    if (OP_IS1('>')) {
         int r = value_less(right, left);
         if (g_err.set) return v_null();
         return v_bool(r);
     }
-    if (strcmp(op, "<=") == 0) {
+    if (OP_IS2('<', '=')) {
         int r = value_less(left, right);
         if (g_err.set) return v_null();
         return v_bool(r || value_equal(left, right));
     }
-    if (strcmp(op, ">=") == 0) {
+    if (OP_IS2('>', '=')) {
         int r = value_less(right, left);
         if (g_err.set) return v_null();
         return v_bool(r || value_equal(left, right));
@@ -672,7 +971,7 @@ static Value apply_binary(const char *op, Value left, Value right, int line) {
     return v_null();
 }
 
-Flow interp_interpret(Node *program) {
+Flow interp_tree_interpret(Node *program) {
     for (int i = 0; i < program->u.program.n; i++) {
         Flow f = exec(program->u.program.stmts[i]);
         if (f == F_EXIT) return F_EXIT;
@@ -697,6 +996,11 @@ Flow interp_interpret(Node *program) {
         (void)r;
     }
     return F_OK;
+}
+
+Flow interp_interpret(Node *program) {
+    if (vm_enabled()) return vm_interpret(program);
+    return interp_tree_interpret(program);
 }
 
 char *interp_eval_program(Node *program) {
@@ -730,6 +1034,8 @@ char *interp_eval_program(Node *program) {
 
 void interp_init(FILE *out, FILE *errw, FILE *in, char **args, int nargs) {
     err_clear();
+    g_nframes = 0;
+    g_nsnap = 0;
     g_it.out = out;
     g_it.errw = errw;
     g_it.in = in;
@@ -741,3 +1047,62 @@ void interp_init(FILE *out, FILE *errw, FILE *in, char **args, int nargs) {
     g_ret = v_null();
     std_install(g_global);
 }
+
+Env *env_public_new(Env *parent) { return env_new(parent); }
+
+int env_public_has(Env *e, const char *name) { return env_find(e, name) != NULL; }
+
+Value env_public_get(Env *e, const char *name) { return env_get(e, name); }
+
+int env_public_index(Env *e, const char *name) {
+    if (!e || e->idxcap == 0) return -1;
+    unsigned h = name_hash(name);
+    int mask = e->idxcap - 1;
+    int i = (int)(h & (unsigned)mask);
+    while (e->idx[i] >= 0) {
+        Binding *b = &e->b[e->idx[i]];
+        if (b->name == name || strcmp(b->name, name) == 0) return e->idx[i];
+        i = (i + 1) & mask;
+    }
+    return -1;
+}
+
+Value env_public_index_value(Env *e, int bi) { return e->b[bi].v; }
+
+int env_public_index_assign(Env *e, int bi, Value v) {
+    if (e->b[bi].is_const) {
+        err_msgf("Cannot reassign constant: %s", e->b[bi].name);
+        return 0;
+    }
+    e->b[bi].v = v;
+    return 1;
+}
+
+void env_public_define(Env *e, const char *name, Value v, int is_const) { env_define(e, name, v, is_const); }
+
+void env_public_assign(Env *e, const char *name, Value v) {
+    if (!env_find(e, name)) env_define(e, name, v, 0);
+    else env_set(e, name, v);
+}
+
+Value vm_apply_binary(const char *op, Value l, Value r, int line) { return apply_binary(op, l, r, line); }
+
+Value vm_index_get(Value obj, Value idx, int line) { return index_value(obj, idx, line); }
+
+void vm_index_set(Value obj, Value idx, Value v, int line) { assign_index(obj, idx, v, line); }
+
+void vm_member_set(Value obj, const char *name, Value v, int line) { assign_member(obj, name, v, line); }
+
+Value vm_member_get(Value obj, const char *name, int line) {
+    if (obj.t == V_MAP) return map_get(obj.as.m, name);
+    err_linef(line, "Cannot read field '%s' of %s", name, type_of(obj));
+    return v_null();
+}
+
+Value vm_negate(Value v) { return op_neg(v); }
+
+Value vm_add_step(Value v, int64_t step) { return op_add(v, v_int_i64(step)); }
+
+Value *vm_iterable(Value v, int *count) { return iterable_items(v, count); }
+
+void vm_import(Node *n) { import_module(n); }

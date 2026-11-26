@@ -1,0 +1,3 @@
+﻿import "nope.uni"
+
+print("after")

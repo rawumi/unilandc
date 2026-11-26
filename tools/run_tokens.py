@@ -5,8 +5,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-CASES = ROOT.parent / "uniland-go" / "compat" / "cases"
-EXPECTED = ROOT.parent / "uniland-go" / "compat" / "expected-tokens"
+CASES = ROOT / "tests" / "compat" / "cases"
+EXPECTED = ROOT / "tests" / "compat" / "expected-tokens"
 EXE = ROOT / "uniland.exe"
 
 ENV = dict(os.environ)

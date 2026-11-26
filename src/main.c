@@ -52,6 +52,10 @@ static char *read_file(const char *path) {
     }
     fclose(f);
     buf[len] = 0;
+    if (len >= 3 && (unsigned char)buf[0] == 0xEF && (unsigned char)buf[1] == 0xBB &&
+        (unsigned char)buf[2] == 0xBF) {
+        memmove(buf, buf + 3, len - 3 + 1);
+    }
     return buf;
 }
 
@@ -60,6 +64,7 @@ static int report_error(void) {
         fprintf(stderr, "UniLand error: Error at line %d: %s\n", g_err.line, g_err.msg);
     else
         fprintf(stderr, "UniLand error: %s\n", g_err.msg);
+    interp_print_stack(stderr);
     return 1;
 }
 
@@ -189,7 +194,7 @@ static int cmd_repl(void) {
 }
 
 typedef struct {
-    int version, help, interactive, run_debug;
+    int version, help, interactive, run_debug, trace;
     const char *check_file;
     const char *eval_code;
     const char *command;
@@ -224,6 +229,10 @@ static int parse_args(int argc, char **argv, Cli *a) {
                     const char *x = argv[i];
                     if (!a->run_file && (!strcmp(x, "-d") || !strcmp(x, "--debug"))) {
                         a->run_debug = 1;
+                        continue;
+                    }
+                    if (!a->run_file && (!strcmp(x, "-t") || !strcmp(x, "--trace"))) {
+                        a->trace = 1;
                         continue;
                     }
                     if (!a->run_file && x[0] == '-') {
@@ -278,6 +287,7 @@ static void print_help(void) {
     printf("  -i, --interactive    запустить интерактивный режим (REPL)\n");
     printf("  -c FILE, --check FILE\n");
     printf("                       проверить синтаксис файла без запуска\n");
+    printf("  -t, --trace          печатать трассировку выполнения (run)\n");
     printf("\n");
     printf("Примеры:  uniland run script.uni   |   uniland -e 'print(2+2)'   |   uniland -i\n");
     printf("Форматтер (расширение uniland-go):  uniland fmt [-w] [-l] script.uni\n");
@@ -356,6 +366,7 @@ int main(int argc, char **argv) {
     Cli a;
     int rc = parse_args(argc - 1, argv + 1, &a);
     if (rc) return rc;
+    if (a.trace) interp_set_trace(1);
     if (a.help) {
         print_help();
         return 0;
@@ -370,6 +381,17 @@ int main(int argc, char **argv) {
     if (!a.command) return cmd_repl();
     if (!strcmp(a.command, "run")) {
         if (!a.run_file) return usage_err("the following arguments are required: file");
+        char base[1024];
+        snprintf(base, sizeof(base), "%s", a.run_file);
+        char *sep = strrchr(base, '\\');
+        char *sep2 = strrchr(base, '/');
+        if (sep2 > sep) sep = sep2;
+        if (sep) {
+            *sep = 0;
+            interp_set_base_dir(base);
+        } else {
+            interp_set_base_dir(".");
+        }
         char *data = read_file(a.run_file);
         if (!data) {
             fprintf(stderr, "Error: file '%s' not found.\n", a.run_file);

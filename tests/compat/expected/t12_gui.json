@@ -1,0 +1,8 @@
+{
+  "args": [],
+  "case": "t12_gui.uni",
+  "exit": 0,
+  "stderr": "",
+  "stdin": "",
+  "stdout": "catch: GUI недоступен в этой сборке: нет cgo или включён тег nogui\ncatch: GUI недоступен в этой сборке: нет cgo или включён тег nogui\ncatch: GUI недоступен в этой сборке: нет cgo или включён тег nogui\ncatch: GUI недоступен в этой сборке: нет cgo или включён тег nogui\ncatch: GUI недоступен в этой сборке: нет cgo или включён тег nogui\ncatch: GUI недоступен в этой сборке: нет cgo или включён тег nogui\nпосле gui\n"
+}

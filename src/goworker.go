@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -15,9 +16,10 @@ import (
 )
 
 type request struct {
-	ID   int    `json:"id"`
-	Op   string `json:"op"`
-	Code string `json:"code"`
+	ID   int      `json:"id"`
+	Op   string   `json:"op"`
+	Code string   `json:"code"`
+	Args []string `json:"args"`
 }
 
 type reply struct {
@@ -184,6 +186,99 @@ func valueText(rv reflect.Value) (string, bool) {
 	return fmt.Sprintf("%v", rv.Interface()), true
 }
 
+var (
+	funcsMu sync.Mutex
+	funcs   = map[string]reflect.Value{}
+)
+
+func convertArg(dst reflect.Value, s string) (reflect.Value, error) {
+	t := dst.Type()
+	switch t.Kind() {
+	case reflect.String:
+		return reflect.ValueOf(s).Convert(t), nil
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+		if err != nil {
+			return reflect.Value{}, fmt.Errorf("go_func: %q не число: %v", s, err)
+		}
+		return reflect.ValueOf(n).Convert(t), nil
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		n, err := strconv.ParseUint(strings.TrimSpace(s), 10, 64)
+		if err != nil {
+			return reflect.Value{}, fmt.Errorf("go_func: %q не число: %v", s, err)
+		}
+		return reflect.ValueOf(n).Convert(t), nil
+	case reflect.Float32, reflect.Float64:
+		f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+		if err != nil {
+			return reflect.Value{}, fmt.Errorf("go_func: %q не число: %v", s, err)
+		}
+		return reflect.ValueOf(f).Convert(t), nil
+	case reflect.Bool:
+		b, err := strconv.ParseBool(strings.TrimSpace(s))
+		if err != nil {
+			return reflect.Value{}, fmt.Errorf("go_func: %q не bool: %v", s, err)
+		}
+		return reflect.ValueOf(b).Convert(t), nil
+	case reflect.Interface:
+		if t.NumMethod() == 0 {
+			return reflect.ValueOf(s), nil
+		}
+	}
+	return reflect.Value{}, fmt.Errorf("go_func: параметр типа %s не поддержан", t)
+}
+
+func callStored(name string, args []string) (string, bool, error) {
+	funcsMu.Lock()
+	fn, ok := funcs[name]
+	funcsMu.Unlock()
+	if !ok {
+		return "", false, fmt.Errorf("go_func: %q не объявлена", name)
+	}
+	ft := fn.Type()
+	in := make([]reflect.Value, 0, len(args))
+	if ft.IsVariadic() {
+		fixed := ft.NumIn() - 1
+		if len(args) < fixed {
+			return "", false, fmt.Errorf("go_func: %q ждёт минимум %d аргумент(ов)", name, fixed)
+		}
+		for i := 0; i < fixed; i++ {
+			v, err := convertArg(reflect.New(ft.In(i)).Elem(), args[i])
+			if err != nil {
+				return "", false, err
+			}
+			in = append(in, v)
+		}
+		sliceT := ft.In(ft.NumIn() - 1)
+		sl := reflect.MakeSlice(sliceT, 0, len(args)-fixed)
+		for _, a := range args[fixed:] {
+			v, err := convertArg(reflect.New(sliceT.Elem()).Elem(), a)
+			if err != nil {
+				return "", false, err
+			}
+			sl = reflect.Append(sl, v)
+		}
+		in = append(in, sl)
+	} else {
+		if len(args) != ft.NumIn() {
+			return "", false, fmt.Errorf("go_func: %q ждёт %d аргумент(ов), передано %d", name, ft.NumIn(), len(args))
+		}
+		for i := 0; i < len(args); i++ {
+			v, err := convertArg(reflect.New(ft.In(i)).Elem(), args[i])
+			if err != nil {
+				return "", false, err
+			}
+			in = append(in, v)
+		}
+	}
+	out := fn.Call(in)
+	if len(out) == 0 {
+		return "", false, nil
+	}
+	text, has := valueText(out[0])
+	return text, has, nil
+}
+
 func main() {
 	out = bufio.NewWriter(os.Stdout)
 	sk := &sink{}
@@ -217,6 +312,31 @@ func main() {
 		}
 		if req.Op == "shutdown" {
 			return
+		}
+		if req.Op == "func" {
+			rv, err := i.Eval(req.Code)
+			if err != nil {
+				send(reply{ID: req.ID, OK: false, Err: err.Error()})
+				continue
+			}
+			if !rv.IsValid() || rv.Kind() != reflect.Func {
+				send(reply{ID: req.ID, OK: false, Err: "go_func: " + req.Code + " не функция"})
+				continue
+			}
+			funcsMu.Lock()
+			funcs[req.Code] = rv
+			funcsMu.Unlock()
+			send(reply{ID: req.ID, OK: true})
+			continue
+		}
+		if req.Op == "fcall" {
+			text, has, err := callStored(req.Code, req.Args)
+			if err != nil {
+				send(reply{ID: req.ID, OK: false, Err: err.Error()})
+				continue
+			}
+			send(reply{ID: req.ID, OK: true, Value: text, Has: has})
+			continue
 		}
 		res := reply{ID: req.ID, OK: true}
 		func() {

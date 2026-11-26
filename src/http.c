@@ -219,6 +219,8 @@ void http_install(Env *env) {
         f->body = NULL;
         f->closure = NULL;
         f->native = fns[i];
+        f->native_ctx = NULL;
+        f->data = NULL;
         env_define_public(env, names[i], v_func(f), 0);
     }
 }

@@ -80,6 +80,7 @@ struct Map {
 };
 
 typedef Value (*NativeFn)(int argc, Value *argv);
+typedef Value (*NativeCtxFn)(Func *self, int argc, Value *argv);
 
 struct Func {
     const char *name;
@@ -88,6 +89,8 @@ struct Func {
     Block *body;
     Env *closure;
     NativeFn native;
+    NativeCtxFn native_ctx;
+    void *data;
 };
 
 Str *str_new(const char *s, size_t len);
@@ -165,7 +168,7 @@ typedef enum {
     N_PROGRAM, N_VARDECL, N_FUNCDECL, N_FUNCEXPR, N_RETURN, N_IF, N_FOR,
     N_FORIN, N_WHILE, N_BREAK, N_CONTINUE, N_BLOCK, N_EXPRSTMT, N_ASSIGN,
     N_TRYCATCH, N_THROW, N_PYBLOCK, N_GOBLOCK, N_BINARY, N_UNARY, N_CALL,
-    N_IDENT, N_LITERAL, N_TEMPLATE, N_ARRAY, N_OBJECT, N_INDEX, N_MEMBER
+    N_IDENT, N_LITERAL, N_TEMPLATE, N_ARRAY, N_OBJECT, N_INDEX, N_MEMBER, N_IMPORT
 } NType;
 
 typedef struct {
@@ -213,10 +216,14 @@ struct Node {
         struct { KeyValue *pairs; int n; } obj;
         struct { Node *obj, *index; } index;
         struct { Node *obj; char *name; } member;
+        struct { char *path; char *alias; } imports;
     } u;
 };
 
 Node *parse_program(Token *tokens);
+void interp_set_base_dir(const char *dir);
+void interp_set_trace(int on);
+void interp_print_stack(FILE *f);
 
 typedef enum {
     F_OK, F_RETURN, F_BREAK, F_CONTINUE, F_ERROR, F_EXIT
@@ -253,6 +260,9 @@ void py_bridge_close(void);
 char *py_dedent(const char *s);
 int go_eval(const char *expr, Value *out, char *err, size_t cap);
 int go_exec(const char *code, char *err, size_t cap);
+int go_resolve_func(const char *name, char *err, size_t cap);
+int go_call_func(const char *name, int argc, Value *argv, Value *out, char *err, size_t cap);
+Value go_func_value(const char *sym);
 void go_bridge_close(void);
 
 extern Interp g_it;
@@ -265,6 +275,33 @@ char *unifmt_format(const char *src, char *err, size_t cap);
 int lsp_serve(void);
 Flow interp_interpret(Node *program);
 char *interp_eval_program(Node *program);
+
+Env *env_public_new(Env *parent);
+int env_public_has(Env *e, const char *name);
+Value env_public_get(Env *e, const char *name);
+int env_public_index(Env *e, const char *name);
+Value env_public_index_value(Env *e, int bi);
+int env_public_index_assign(Env *e, int bi, Value v);
+void env_public_define(Env *e, const char *name, Value v, int is_const);
+void env_public_assign(Env *e, const char *name, Value v);
+
+Value vm_apply_binary(const char *op, Value l, Value r, int line);
+Value vm_index_get(Value obj, Value idx, int line);
+void vm_index_set(Value obj, Value idx, Value v, int line);
+void vm_member_set(Value obj, const char *name, Value v, int line);
+Value vm_member_get(Value obj, const char *name, int line);
+Value vm_negate(Value v);
+Value vm_add_step(Value v, int64_t step);
+Value *vm_iterable(Value v, int *count);
+void vm_import(Node *n);
+
+int vm_enabled(void);
+Flow vm_interpret(Node *program);
+Flow interp_tree_interpret(Node *program);
+int interp_trace_on(void);
+void interp_frame_push(const char *name, int line);
+void interp_frame_pop(void);
+void interp_snapshot_error(void);
 Value json_parse_value(const char *src);
 char *json_dumps(Value v, int indent, int *err);
 int value_equal(Value a, Value b);

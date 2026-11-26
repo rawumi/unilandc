@@ -9,14 +9,58 @@
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+#include <mmsystem.h>
 
 #define GUI_ERR "GUI недоступен в этой сборке: нет cgo или включён тег nogui"
+
+typedef void GpImage;
+typedef void GpBitmap;
+typedef struct {
+    UINT32 version;
+    void *callback;
+    BOOL suppress_bg;
+    BOOL suppress_codecs;
+} GdipInput;
+typedef struct {
+    UINT32 a;
+    UINT16 b;
+    UINT16 c;
+    UINT8 d[8];
+} GdipGuid;
+
+int GdiplusStartup(ULONG_PTR *token, const GdipInput *input, void *output);
+void GdiplusShutdown(ULONG_PTR token);
+int GdipCreateBitmapFromFile(const wchar_t *filename, GpBitmap **bitmap);
+int GdipGetImageWidth(GpImage *image, UINT *width);
+int GdipGetImageHeight(GpImage *image, UINT *height);
+int GdipCreateHBITMAPFromBitmap(GpBitmap *bitmap, HBITMAP *hbm, DWORD background);
+int GdipDisposeImage(GpImage *image);
+int GdipImageGetFrameCount(GpImage *image, const GdipGuid *dim, UINT *count);
+int GdipImageSelectActiveFrame(GpImage *image, const GdipGuid *dim, UINT index);
+
+static const GdipGuid k_frame_time = {0x6aedbd6d, 0x3fb5, 0x418a,
+                                      {0x83, 0xa6, 0x7f, 0x45, 0x22, 0x9d, 0xc8, 0x72}};
+static ULONG_PTR g_gdip_token;
+static int g_gdip_ready;
+
+static void gdip_init(void) {
+    if (g_gdip_ready) return;
+    GdipInput in;
+    memset(&in, 0, sizeof(in));
+    in.version = 1;
+    if (GdiplusStartup(&g_gdip_token, &in, NULL) == 0) g_gdip_ready = 1;
+}
 
 typedef struct {
     HWND hwnd;
     int kind;
     int has_fn;
     Value fn;
+    GpImage *img;
+    UINT frames;
+    UINT frame;
+    int timer;
+    int alias;
 } Widget;
 
 static HWND g_win;
@@ -74,6 +118,8 @@ static void call_cb(Value fn) {
     }
 }
 
+static HBITMAP image_to_hbitmap(GpImage *img);
+
 static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_COMMAND: {
@@ -82,11 +128,38 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             call_cb(g_widgets[idx].fn);
         return 0;
     }
+    case WM_TIMER: {
+        int idx = (int)wp - 1000;
+        if (idx >= 0 && idx < g_nwidgets && g_widgets[idx].timer && g_widgets[idx].img &&
+            g_widgets[idx].frames > 1) {
+            UINT f = (g_widgets[idx].frame + 1) % g_widgets[idx].frames;
+            g_widgets[idx].frame = f;
+            GdipImageSelectActiveFrame(g_widgets[idx].img, &k_frame_time, f);
+            HBITMAP nb = image_to_hbitmap(g_widgets[idx].img);
+            if (nb) {
+                HBITMAP old = (HBITMAP)SendMessageW(g_widgets[idx].hwnd, STM_SETIMAGE,
+                                                    (WPARAM)IMAGE_BITMAP, (LPARAM)nb);
+                if (old) DeleteObject(old);
+                InvalidateRect(g_widgets[idx].hwnd, NULL, TRUE);
+            }
+        }
+        return 0;
+    }
     case WM_CLOSE:
         if (g_has_on_close) call_cb(g_on_close);
         DestroyWindow(h);
         return 0;
     case WM_DESTROY:
+        for (int i = 0; i < g_nwidgets; i++) {
+            if (g_widgets[i].timer) KillTimer(h, 1000 + i);
+            if (g_widgets[i].alias) {
+                wchar_t cmd[64];
+                swprintf(cmd, 64, L"close ulv%d", g_widgets[i].alias);
+                mciSendStringW(cmd, NULL, 0, NULL);
+            }
+            if (g_widgets[i].img) GdipDisposeImage(g_widgets[i].img);
+        }
+        g_nwidgets = 0;
         PostQuitMessage(0);
         return 0;
     default:
@@ -113,6 +186,11 @@ static int widget_put(HWND h, int kind) {
     g_widgets[g_nwidgets].kind = kind;
     g_widgets[g_nwidgets].has_fn = 0;
     g_widgets[g_nwidgets].fn = v_null();
+    g_widgets[g_nwidgets].img = NULL;
+    g_widgets[g_nwidgets].frames = 1;
+    g_widgets[g_nwidgets].frame = 0;
+    g_widgets[g_nwidgets].timer = 0;
+    g_widgets[g_nwidgets].alias = 0;
     return g_nwidgets++;
 }
 
@@ -272,27 +350,55 @@ static Value b_gui_on_close(int argc, Value *argv) {
     return v_null();
 }
 
+static HBITMAP image_to_hbitmap(GpImage *img) {
+    HBITMAP bmp = NULL;
+    if (GdipCreateHBITMAPFromBitmap((GpBitmap *)img, &bmp, 0xFFFFFFFF) != 0) return NULL;
+    return bmp;
+}
+
 static Value make_image(int argc, Value *argv, int button) {
     if (!need_win(argc, argv, button ? "gui_image_button" : "gui_image")) return v_null();
-    const char *path = arg_text(argc, argv, 1, "");
+    gdip_init();
+    if (!g_gdip_ready) return g_fail("gui_image: GDI+ недоступен");
+    const char *path = arg_text(argc, argv, 0, "");
     int ok = 1;
-    int w = arg_int(argc, argv, button ? 3 : 2, 0, &ok);
-    int h = arg_int(argc, argv, button ? 4 : 3, 0, &ok);
+    int w = arg_int(argc, argv, button ? 2 : 1, 0, &ok);
+    int h = arg_int(argc, argv, button ? 3 : 2, 0, &ok);
     if (!ok) return g_fail("gui_image(): ширина и высота должны быть числами");
     wchar_t *wpath = u2w(path);
-    HBITMAP bmp = (HBITMAP)LoadImageW(NULL, wpath, IMAGE_BITMAP, 0, 0,
-                                      LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-    if (!bmp) return g_fail("gui_image: не удалось загрузить изображение (поддерживается BMP/ICO)");
-    int cw = w > 0 ? w : 120;
-    int ch = h > 0 ? h : 120;
+    GpBitmap *img = NULL;
+    int lr = GdipCreateBitmapFromFile(wpath, &img);
+    if (lr != 0 || !img)
+        return g_fail("gui_image: не удалось загрузить изображение (PNG/JPEG/GIF/BMP/ICO)");
+    UINT frames = 1;
+    GdipImageGetFrameCount((GpImage *)img, &k_frame_time, &frames);
+    if (frames < 1) frames = 1;
+    UINT iw = 0;
+    UINT ih = 0;
+    GdipGetImageWidth((GpImage *)img, &iw);
+    GdipGetImageHeight((GpImage *)img, &ih);
+    int cw = w > 0 ? w : (int)iw;
+    int ch = h > 0 ? h : (int)ih;
+    if (cw <= 0) cw = 120;
+    if (ch <= 0) ch = 120;
     HWND st = child(L"STATIC", L"", SS_BITMAP | SS_CENTERIMAGE, 10, g_layout_y, cw, ch,
                     4000 + g_nwidgets);
+    HBITMAP bmp = image_to_hbitmap((GpImage *)img);
+    if (!bmp) return g_fail("gui_image: не удалось преобразовать изображение");
     SendMessageW(st, STM_SETIMAGE, (WPARAM)IMAGE_BITMAP, (LPARAM)bmp);
     g_layout_y += ch + 6;
     int idx = widget_put(st, button ? 5 : 4);
-    if (button && argc > 2 && argv[2].t == V_FUNC) {
+    if (idx >= 0) {
+        g_widgets[idx].img = (GpImage *)img;
+        g_widgets[idx].frames = frames;
+        if (!button && frames > 1) {
+            g_widgets[idx].timer = 1;
+            SetTimer(g_win, 1000 + idx, 100, NULL);
+        }
+    }
+    if (button && argc > 1 && argv[1].t == V_FUNC) {
         g_widgets[idx].has_fn = 1;
-        g_widgets[idx].fn = argv[2];
+        g_widgets[idx].fn = argv[1];
     }
     return v_int_i64(idx + 1);
 }
@@ -309,12 +415,55 @@ static Value b_gui_image_button(int argc, Value *argv) {
 
 static Value b_gui_gif(int argc, Value *argv) {
     if (no_gui()) return g_fail(GUI_ERR);
-    return g_fail("gui_gif: анимация GIF не поддерживается, используйте gui_image (BMP)");
+    return make_image(argc, argv, 0);
 }
 
 static Value b_gui_video(int argc, Value *argv) {
     if (no_gui()) return g_fail(GUI_ERR);
-    return g_fail("gui_video: воспроизведение видео не поддерживается");
+    if (!need_win(argc, argv, "gui_video")) return v_null();
+    const char *path = arg_text(argc, argv, 0, "");
+    int ok = 1;
+    int w = arg_int(argc, argv, 1, 320, &ok);
+    int h = arg_int(argc, argv, 2, 240, &ok);
+    if (!ok || w <= 0) w = 320;
+    if (h <= 0) h = 240;
+    wchar_t *wpath = u2w(path);
+    for (wchar_t *q = wpath; *q; q++)
+        if (*q == L'/') *q = L'\\';
+    HWND vw = child(L"STATIC", L"", SS_BLACKRECT, 10, g_layout_y, w, h, 5000 + g_nwidgets);
+    g_layout_y += h + 6;
+    int idx = widget_put(vw, 6);
+    if (idx < 0) return g_fail("gui_video: слишком много виджетов");
+    int alias = idx + 1;
+    wchar_t cmd[2048];
+    swprintf(cmd, 2048, L"open \"%s\" alias ulv%d", wpath, alias);
+    MCIERROR e = mciSendStringW(cmd, NULL, 0, NULL);
+    if (e) {
+        swprintf(cmd, 2048, L"open \"%s\" type mpegvideo alias ulv%d", wpath, alias);
+        e = mciSendStringW(cmd, NULL, 0, NULL);
+    }
+    if (e) {
+        wchar_t werr[256];
+        werr[0] = 0;
+        mciGetErrorStringW(e, werr, 256);
+        err_msgf("gui_video: %s", w2u(werr));
+        return v_null();
+    }
+    g_widgets[idx].alias = alias;
+    swprintf(cmd, 2048, L"window ulv%d handle %lld", alias, (long long)(intptr_t)vw);
+    mciSendStringW(cmd, NULL, 0, NULL);
+    swprintf(cmd, 2048, L"put ulv%d window at 0 0 %d %d", alias, w, h);
+    mciSendStringW(cmd, NULL, 0, NULL);
+    swprintf(cmd, 2048, L"play ulv%d", alias);
+    e = mciSendStringW(cmd, NULL, 0, NULL);
+    if (e) {
+        wchar_t werr[256];
+        werr[0] = 0;
+        mciGetErrorStringW(e, werr, 256);
+        err_msgf("gui_video: %s", w2u(werr));
+        return v_null();
+    }
+    return v_int_i64(idx + 1);
 }
 
 static Value open_dialog(int save, const wchar_t *title) {
@@ -482,6 +631,8 @@ void gui_install(Env *env) {
         f->body = NULL;
         f->closure = NULL;
         f->native = fns[i];
+        f->native_ctx = NULL;
+        f->data = NULL;
         env_define_public(env, names[i], v_func(f), 0);
     }
 }

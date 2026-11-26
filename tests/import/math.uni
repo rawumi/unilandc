@@ -1,0 +1,10 @@
+let pi = 3.14159
+let author = "uniland"
+
+fn square(x) {
+    return x * x
+}
+
+fn area(r) {
+    return pi * square(r)
+}

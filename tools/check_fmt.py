@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-CASES = ROOT.parent / "uniland-go" / "compat" / "cases"
+CASES = ROOT / "tests" / "compat" / "cases"
 EXE = ROOT / "uniland.exe"
 
 ENV = dict(os.environ)

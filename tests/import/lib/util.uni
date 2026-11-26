@@ -1,0 +1,5 @@
+import "base.uni"
+
+fn total(x) {
+    return add_base(x) * 2
+}

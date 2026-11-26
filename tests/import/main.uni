@@ -1,0 +1,11 @@
+import "math.uni"
+import "math.uni" as m
+import "lib/util.uni" as u
+
+print(square(5))
+print(area(2))
+print(pi)
+print(author)
+print(m.pi)
+print(m.square(3))
+print(u.total(1))

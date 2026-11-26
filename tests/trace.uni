@@ -1,0 +1,13 @@
+fn c(x) {
+    return x / 0
+}
+
+fn b(x) {
+    return c(x)
+}
+
+fn a(x) {
+    return b(x)
+}
+
+print(a(1))

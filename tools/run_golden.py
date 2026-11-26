@@ -5,8 +5,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-CASES = ROOT.parent / "uniland-go" / "compat" / "cases"
-EXPECTED = ROOT.parent / "uniland-go" / "compat" / "expected"
+CASES = ROOT / "tests" / "compat" / "cases"
+EXPECTED = ROOT / "tests" / "compat" / "expected"
 EXE = ROOT / "uniland.exe"
 
 

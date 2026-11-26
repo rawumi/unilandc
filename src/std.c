@@ -1750,6 +1750,11 @@ static Value b_py(int argc, Value *argv) { return b_py_bridge(argc, argv, "py");
 static Value b_goeval(int argc, Value *argv) { return b_py_bridge(argc, argv, "goeval"); }
 static Value b_goexec(int argc, Value *argv) { return b_py_bridge(argc, argv, "goexec"); }
 
+static Value b_gofunc(int argc, Value *argv) {
+    if (argc != 1 || argv[0].t != V_STR) return failf("gofunc() expects one string argument");
+    return go_func_value(argv[0].as.s->s);
+}
+
 static const char *const k_mon_abbr[12] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
                                            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
 static const char *const k_mon_full[12] = {"January", "February", "March", "April", "May", "June",
@@ -1827,6 +1832,8 @@ static void def(Env *e, const char *name, NativeFn fn) {
     f->body = NULL;
     f->closure = NULL;
     f->native = fn;
+    f->native_ctx = NULL;
+    f->data = NULL;
     env_define_public(e, name, v_func(f), 0);
 }
 
@@ -1926,6 +1933,7 @@ void std_install(Env *env) {
     def(env, "py", b_py);
     def(env, "goeval", b_goeval);
     def(env, "goexec", b_goexec);
+    def(env, "gofunc", b_gofunc);
 
     gui_install(env);
     c_install(env);

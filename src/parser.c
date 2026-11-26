@@ -536,6 +536,21 @@ static Node *expression(P *p, int min_prec) {
 static Node *small(P *p) {
     Token t = cur(p);
     if (t.t == T_KEYWORD) {
+        if (strcmp(t.v, "import") == 0) {
+            take(p);
+            Token path;
+            if (!expect(p, T_STRING, NULL, &path)) return NULL;
+            Node *n = nd(N_IMPORT, t.line);
+            n->u.imports.path = path.v;
+            n->u.imports.alias = NULL;
+            if (is_kw(p, "as")) {
+                take(p);
+                Token id;
+                if (!expect(p, T_IDENT, NULL, &id)) return NULL;
+                n->u.imports.alias = id.v;
+            }
+            return n;
+        }
         if (strcmp(t.v, "let") == 0 || strcmp(t.v, "const") == 0) {
             int is_const = strcmp(t.v, "const") == 0;
             take(p);

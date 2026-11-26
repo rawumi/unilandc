@@ -4,6 +4,9 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 ROOT = Path(__file__).resolve().parents[1]
 CASES = ROOT / "tests" / "compat" / "cases"
 EXPECTED = ROOT / "tests" / "compat" / "expected-tokens"
